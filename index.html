@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>声出しパッド</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700&display=swap">
+<!--
+  声出しパッド：文字を打って、表情つきで読み上げる
+  2026-11-05 作成
+    きっかけ：ドラム（VIVANT）のように、スマホに打った文字をしゃべらせたい
+    方式：ブラウザ内蔵の読み上げ（Web Speech API）。圏外でも動く
+    表情：声の高さ・速さ・音量の組み合わせで出している（EMOTIONS）
+    やらないこと：VOICEVOX連携はまだ。足すときは EMOTIONS に style ID を持たせる
+  2026-11-05 GitHub Pages 対応
+    きっかけ：Artifact のリンクがスマホで開けなかった
+    原因：Artifact 用に doctype・charset・viewport を省いていた（公開時に自動で足される前提）
+    対処：自前で doctype・charset・viewport・body の余白リセットを足した
+    やらないこと：Artifact 版は更新しない（GitHub Pages 版を正とする）
+-->
+<style>
+  /* 1画面アプリ：上に入力欄、真ん中に表情、下に大きな再生ボタン */
+  :root {
+    --bg: #eef1f2;
+    --panel: #ffffff;
+    --fg: #1d2a2f;
+    --muted: #5d6e74;
+    --line: #cfd8db;
+    --accent: #0f6e73;
+    --accent-fg: #ffffff;
+    --stop: #b4442e;
+    --font-display: "Zen Maru Gothic", "Hiragino Maru Gothic ProN", "Hiragino Sans", sans-serif;
+    --font-body: "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12191b; --panel: #1b2528; --fg: #e4ecee; --muted: #93a4a9;
+      --line: #2e3c40; --accent: #3fb5b9; --accent-fg: #0b1517; --stop: #e0735c;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12191b; --panel: #1b2528; --fg: #e4ecee; --muted: #93a4a9;
+    --line: #2e3c40; --accent: #3fb5b9; --accent-fg: #0b1517; --stop: #e0735c;
+    color-scheme: dark;
+  }
+
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: 16px;
+  }
+  .app {
+    box-sizing: border-box;
+    max-width: 560px;
+    min-height: 100%;
+    margin: 0 auto;
+    padding-block: 16px 20px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  h1 { font-family: var(--font-display); font-weight: 700; font-size: 1.15rem; margin: 0; letter-spacing: 0.04em; }
+  .status { font-size: 0.8rem; color: var(--muted); }
+
+  textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 9.5em;
+    flex: 1 1 auto;
+    resize: none;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--panel);
+    color: var(--fg);
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 1.35rem;
+    line-height: 1.6;
+  }
+  textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .label { font-size: 0.75rem; color: var(--muted); letter-spacing: 0.08em; margin: 0 0 8px; }
+  .emotions { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+  .emo {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    padding: 10px 2px 8px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--panel);
+    color: var(--fg);
+    font: inherit;
+    cursor: pointer;
+  }
+  .emo b { font-family: var(--font-display); font-weight: 700; font-size: 0.95rem; }
+  .emo small { font-size: 0.65rem; color: var(--muted); white-space: nowrap; }
+  .emo[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  .emo[aria-pressed="true"] small { color: var(--accent-fg); opacity: 0.85; }
+  .emo:focus-visible, .play:focus-visible, .hist button:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+
+  .play {
+    width: 100%;
+    padding: 18px;
+    border: 0;
+    border-radius: 16px;
+    background: var(--accent);
+    color: var(--accent-fg);
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 1.3rem;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+  }
+  .play.speaking { background: var(--stop); }
+  .play:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .voice-row { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--muted); }
+  .voice-row label { flex: none; }
+  select {
+    flex: 1 1 auto; min-width: 0;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--fg);
+    font: inherit;
+  }
+
+  .hist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .hist button {
+    width: 100%; text-align: left;
+    padding: 8px 10px;
+    border: 0; border-bottom: 1px solid var(--line);
+    background: none; color: var(--fg);
+    font: inherit; font-size: 0.9rem;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    cursor: pointer;
+  }
+  .hist .tag { color: var(--muted); font-size: 0.75rem; margin-right: 6px; }
+  .empty { font-size: 0.8rem; color: var(--muted); margin: 0; }
+  .error { color: var(--stop); font-size: 0.85rem; margin: 0; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header>
+    <h1>声出しパッド</h1>
+    <span class="status" id="status">準備中…</span>
+  </header>
+
+  <textarea id="text" aria-label="しゃべる言葉">こんにちは。今日はよろしくお願いします。</textarea>
+
+  <section>
+    <p class="label">表情</p>
+    <div class="emotions" id="emotions"></div>
+  </section>
+
+  <button class="play" id="play" type="button">▶ 話す</button>
+
+  <div class="voice-row">
+    <label for="voice">声</label>
+    <select id="voice"></select>
+  </div>
+
+  <section>
+    <p class="label">さっき話したこと（タップでもう一度）</p>
+    <ul class="hist" id="hist"></ul>
+  </section>
+
+  <p class="error" id="error" hidden></p>
+</div>
+
+<script>
+  // 表情ごとの声の出し方。pitch 0〜2 / rate 0.1〜10 / volume 0〜1（1がふつう）
+  const EMOTIONS = [
+    { id: 'normal', name: 'ふつう',   hint: 'そのまま',   pitch: 1.0,  rate: 1.0,  volume: 1.0 },
+    { id: 'happy',  name: 'うれしい', hint: '高め・速め', pitch: 1.4,  rate: 1.12, volume: 1.0 },
+    { id: 'sad',    name: 'かなしい', hint: '低め・遅め', pitch: 0.75, rate: 0.8,  volume: 0.85 },
+    { id: 'angry',  name: 'おこる',   hint: '低め・速め', pitch: 0.8,  rate: 1.3,  volume: 1.0 },
+    { id: 'quiet',  name: 'ひそひそ', hint: '小さめ',     pitch: 0.95, rate: 0.9,  volume: 0.35 },
+  ];
+  const HIST_KEY = 'koedashi-history';
+  const HIST_MAX = 8;
+
+  const $ = (id) => document.getElementById(id);
+  const textEl = $('text'), playEl = $('play'), voiceEl = $('voice');
+  const statusEl = $('status'), errorEl = $('error'), histEl = $('hist');
+  const synth = window.speechSynthesis;
+  let emotion = EMOTIONS[0];
+  let voices = [];
+
+  // 表情ボタン
+  for (const e of EMOTIONS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'emo';
+    b.id = 'emo-' + e.id;
+    b.setAttribute('aria-pressed', String(e === emotion));
+    b.innerHTML = `<b>${e.name}</b><small>${e.hint}</small>`;
+    b.addEventListener('click', () => {
+      emotion = e;
+      document.querySelectorAll('.emo').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    });
+    $('emotions').append(b);
+  }
+
+  // 日本語の声だけ並べる（端末によって数が違う）
+  function loadVoices() {
+    voices = synth.getVoices().filter((v) => v.lang.replace('_', '-').startsWith('ja'));
+    const prev = voiceEl.value;
+    voiceEl.innerHTML = '';
+    for (const v of voices) {
+      const o = document.createElement('option');
+      o.value = v.name;
+      o.textContent = v.name + (v.localService ? '' : '（ネット）');
+      voiceEl.append(o);
+    }
+    if (prev && voices.some((v) => v.name === prev)) voiceEl.value = prev;
+    statusEl.textContent = voices.length ? `日本語の声 ${voices.length}種類` : '日本語の声が見つかりません';
+  }
+
+  function showError(msg) { errorEl.textContent = msg; errorEl.hidden = !msg; }
+
+  function setSpeaking(on) {
+    playEl.classList.toggle('speaking', on);
+    playEl.textContent = on ? '■ 止める' : '▶ 話す';
+  }
+
+  function speak(text, emo) {
+    text = text.trim();
+    if (!text) { showError('話す言葉を入力してください。'); return; }
+    showError('');
+    synth.cancel(); // 前の読み上げが残っていると次が始まらない端末がある
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'ja-JP';
+    const v = voices.find((x) => x.name === voiceEl.value);
+    if (v) u.voice = v;
+    u.pitch = emo.pitch;
+    u.rate = emo.rate;
+    u.volume = emo.volume;
+    u.onstart = () => setSpeaking(true);
+    u.onend = () => setSpeaking(false);
+    u.onerror = (ev) => {
+      setSpeaking(false);
+      if (ev.error !== 'canceled' && ev.error !== 'interrupted') showError('読み上げに失敗しました（' + ev.error + '）。声を変えて試してください。');
+    };
+    synth.speak(u);
+    addHistory(text, emo);
+  }
+
+  // 履歴（この端末のブラウザにだけ残る）
+  function readHistory() {
+    try { return JSON.parse(localStorage.getItem(HIST_KEY)) || []; } catch { return []; }
+  }
+  function addHistory(text, emo) {
+    const list = readHistory().filter((h) => h.text !== text);
+    list.unshift({ text, emo: emo.id });
+    try { localStorage.setItem(HIST_KEY, JSON.stringify(list.slice(0, HIST_MAX))); } catch {}
+    renderHistory();
+  }
+  function renderHistory() {
+    const list = readHistory();
+    histEl.innerHTML = '';
+    if (!list.length) {
+      histEl.innerHTML = '<li><p class="empty">まだありません。話した言葉がここに並びます。</p></li>';
+      return;
+    }
+    for (const h of list) {
+      const emo = EMOTIONS.find((e) => e.id === h.emo) || EMOTIONS[0];
+      const li = document.createElement('li');
+      const b = document.createElement('button');
+      b.type = 'button';
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = emo.name;
+      b.append(tag, h.text);
+      b.addEventListener('click', () => {
+        textEl.value = h.text;
+        $('emo-' + emo.id).click();
+        speak(h.text, emo);
+      });
+      li.append(b);
+      histEl.append(li);
+    }
+  }
+
+  if (!synth) {
+    statusEl.textContent = '使えません';
+    playEl.disabled = true;
+    showError('このブラウザは読み上げに対応していません。Safari か Chrome で開いてください。');
+  } else {
+    loadVoices();
+    synth.addEventListener?.('voiceschanged', loadVoices);
+    playEl.addEventListener('click', () => {
+      if (synth.speaking) { synth.cancel(); setSpeaking(false); return; }
+      speak(textEl.value, emotion);
+    });
+    // PCで試すとき用：Ctrl+Enter で話す
+    textEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); playEl.click(); }
+    });
+  }
+  renderHistory();
+</script>
+</body>
+</html>
